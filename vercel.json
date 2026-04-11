@@ -1,0 +1,21 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "functions": {
+    "api/upload.mjs": {
+      "maxDuration": 120,
+      "memory": 1024
+    },
+    "api/generate-exam.mjs": {
+      "maxDuration": 120,
+      "memory": 1024
+    }
+  }
+}
