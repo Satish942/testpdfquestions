@@ -1,8 +1,21 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 const SESSION_KEY = 'rag-gemini-session'
 const HISTORY_KEY = 'rag-gemini-score-history'
+const HISTORY_SESSION_KEY = 'rag-exam-history-session'
+
+function getOrCreateHistorySessionKey() {
+  try {
+    let k = localStorage.getItem(HISTORY_SESSION_KEY)
+    if (k && /^[0-9a-f-]{36}$/i.test(k)) return k
+    k = crypto.randomUUID()
+    localStorage.setItem(HISTORY_SESSION_KEY, k)
+    return k
+  } catch {
+    return crypto.randomUUID()
+  }
+}
 
 function loadSession() {
   try {
@@ -11,7 +24,12 @@ function loadSession() {
     const s = JSON.parse(raw)
     const label = s?.sourceDisplayName || s?.pdfDisplayName
     if (s?.fileSearchStoreName && label) {
-      return { fileSearchStoreName: s.fileSearchStoreName, sourceDisplayName: label }
+      return {
+        fileSearchStoreName: s.fileSearchStoreName,
+        sourceDisplayName: label,
+        questionCandidates:
+          typeof s.questionCandidates === 'number' ? s.questionCandidates : null,
+      }
     }
   } catch {
     /* ignore */
@@ -58,6 +76,9 @@ export default function App() {
   const [tab, setTab] = useState('upload')
   const [session, setSession] = useState(() => loadSession())
   const [history, setHistory] = useState(() => loadHistory())
+  const [serverHistoryEnabled, setServerHistoryEnabled] = useState(null)
+  const [historySaveError, setHistorySaveError] = useState('')
+  const serverHistorySeeded = useRef(false)
   const [questionCount, setQuestionCount] = useState(5)
   const [uploadBusy, setUploadBusy] = useState(false)
   const [uploadMsg, setUploadMsg] = useState('')
@@ -71,6 +92,50 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history))
   }, [history])
+
+  useEffect(() => {
+    const sessionKey = getOrCreateHistorySessionKey()
+    ;(async () => {
+      try {
+        const res = await fetch('/api/exam-history', {
+          headers: { 'X-Session-Key': sessionKey },
+        })
+        const data = await res.json().catch(() => ({}))
+        if (res.status === 503 && data.disabled) {
+          setServerHistoryEnabled(false)
+          return
+        }
+        if (!res.ok) {
+          setServerHistoryEnabled(false)
+          return
+        }
+        setServerHistoryEnabled(true)
+        const rows = (data.items || []).map((x) => ({
+          id: x.id,
+          at: x.at,
+          score: x.score,
+          total: x.total,
+          pct: x.pct,
+          sourceDisplayName: x.sourceDisplayName || 'Exam',
+        }))
+        setHistory((prev) => {
+          if (
+            !serverHistorySeeded.current &&
+            rows.length === 0 &&
+            prev.length > 0
+          ) {
+            serverHistorySeeded.current = true
+            return prev
+          }
+          serverHistorySeeded.current = true
+          return rows
+        })
+      } catch (e) {
+        console.warn('Exam history API:', e)
+        setServerHistoryEnabled(false)
+      }
+    })()
+  }, [])
 
   const persistSession = useCallback((s) => {
     setSession(s)
@@ -94,11 +159,20 @@ export default function App() {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || res.statusText)
       const label = data.sourceDisplayName || data.pdfDisplayName || file.name
+      const questionCandidates =
+        typeof data.questionCandidates === 'number'
+          ? data.questionCandidates
+          : null
       persistSession({
         fileSearchStoreName: data.fileSearchStoreName,
         sourceDisplayName: label,
+        questionCandidates,
       })
-      setUploadMsg(`Ready: ${label} is indexed for exams.`)
+      const extra =
+        questionCandidates != null
+          ? ` ~${questionCandidates} question opportunities detected in the material.`
+          : ''
+      setUploadMsg(`Ready: ${label} is indexed for exams.${extra}`)
     } catch (e) {
       setUploadMsg(e.message || 'Upload failed')
     } finally {
@@ -135,7 +209,7 @@ export default function App() {
     }
   }
 
-  const submitExam = () => {
+  const submitExam = async () => {
     if (!questions.length) return
     let correct = 0
     for (const q of questions) {
@@ -145,6 +219,7 @@ export default function App() {
     const pct = total ? Math.round((correct / total) * 1000) / 10 : 0
     setScoreSummary({ correct, total, pct })
     setPhase('results')
+    setHistorySaveError('')
     const entry = {
       id: crypto.randomUUID(),
       at: new Date().toISOString(),
@@ -154,7 +229,35 @@ export default function App() {
         session?.sourceDisplayName || session?.pdfDisplayName || 'Exam',
       pct,
     }
-    setHistory((h) => [entry, ...h].slice(0, 50))
+    if (serverHistoryEnabled === true) {
+      try {
+        const res = await fetch('/api/exam-history', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-Key': getOrCreateHistorySessionKey(),
+          },
+          body: JSON.stringify({
+            at: entry.at,
+            score: entry.score,
+            total: entry.total,
+            pct: entry.pct,
+            sourceDisplayName: entry.sourceDisplayName,
+          }),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          throw new Error(data.error || 'Could not save exam history')
+        }
+        const saved = { ...entry, id: data.id || entry.id }
+        setHistory((h) => [saved, ...h].slice(0, 50))
+      } catch (e) {
+        setHistorySaveError(e.message || 'Could not save to Firestore')
+        setHistory((h) => [entry, ...h].slice(0, 50))
+      }
+    } else {
+      setHistory((h) => [entry, ...h].slice(0, 50))
+    }
   }
 
   const resetExam = () => {
@@ -180,7 +283,7 @@ export default function App() {
         <h1>Gemini RAG exam</h1>
         <p className="app-sub">
           Upload study material (PDF, Word, or text: notes, Q&amp;A, or existing multiple-choice).
-          It is indexed with Gemini File Search, then you generate a 4-option exam. Scores stay in this browser only.
+          It is indexed with Gemini File Search, then you generate a 4-option exam. Score history is stored in Firestore when the server has a Firebase <strong>service account</strong> configured; otherwise it stays in this browser only.
         </p>
       </header>
 
@@ -259,6 +362,22 @@ export default function App() {
           </div>
 
           {sessionBadge}
+          {session && (
+            <div className="glass-inset stat-box" aria-live="polite">
+              <div className="stat-box-title">From your document</div>
+              <div className="stat-box-metric">
+                <span className="stat-box-label">Question opportunities detected</span>
+                <span className="stat-box-value">
+                  {session.questionCandidates != null
+                    ? session.questionCandidates
+                    : '—'}
+                </span>
+              </div>
+              <p className="muted stat-box-hint">
+                Model estimate after indexing (not the same as “questions per exam”).
+              </p>
+            </div>
+          )}
           {uploadMsg && (
             <p className={`status ${uploadMsg.includes('fail') || uploadMsg.includes('Please') ? 'status-error' : ''}`}>
               {uploadMsg}
@@ -363,7 +482,16 @@ export default function App() {
 
       <section className="glass history">
         <h2>Score history</h2>
-        <p className="muted">Stored locally in your browser (last 50 runs).</p>
+        <p className="muted">
+          {serverHistoryEnabled === true
+            ? 'Last 50 attempts loaded from Firestore for this browser (server uses your Firebase service account).'
+            : serverHistoryEnabled === false
+              ? 'Stored locally only. Set FIREBASE_SERVICE_ACCOUNT_B64 (or JSON) on the server per `.env.example` to enable cloud history.'
+              : 'Loading history…'}
+        </p>
+        {historySaveError && (
+          <p className="status status-error">{historySaveError}</p>
+        )}
         {history.length === 0 ? (
           <p className="muted" style={{ marginTop: '0.5rem' }}>
             No attempts yet.

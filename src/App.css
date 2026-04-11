@@ -161,6 +161,51 @@
   color: var(--accent);
 }
 
+.stat-box {
+  margin-top: 1rem;
+  padding: 1rem 1.15rem;
+  max-width: 22rem;
+}
+
+.stat-box-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.stat-box-metric {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.stat-box-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+  line-height: 1.35;
+}
+
+.stat-box-value {
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-box-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
 .question-block {
   padding: 1.1rem 1.2rem;
   margin-bottom: 1rem;
