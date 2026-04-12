@@ -156,22 +156,9 @@ export default function App() {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || res.statusText)
       
-      const label = data.sourceDisplayName || data.pdfDisplayName || file.name
-      const questionCandidates = typeof data.questionCandidates === 'number' ? data.questionCandidates : 0
+      const label = data.sourceDisplayName || file.name
+      const questions = data.questions || []
 
-      // 2. Generate large pool of questions for this document
-      const genRes = await fetch('/api/generate-exam', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fileSearchStoreName: data.fileSearchStoreName,
-          questionCount: questionCandidates || 25,
-        }),
-      })
-      const genData = await genRes.json().catch(() => ({}))
-      if (!genRes.ok) throw new Error(genData.error || genRes.statusText)
-
-      // 3. Save document and its question pool to Firestore vault
       const docRes = await fetch('/api/documents', {
         method: 'POST',
         headers: {
@@ -180,8 +167,8 @@ export default function App() {
         },
         body: JSON.stringify({
           sourceDisplayName: label,
-          questionCandidates: questionCandidates || genData.questions?.length || 0,
-          questions: genData.questions || []
+          questionCandidates: questions.length,
+          questions: questions
         })
       })
       
@@ -202,7 +189,7 @@ export default function App() {
 
   const deleteDocument = async (docId) => {
     try {
-      const res = await fetch(`/api/documents/${docId}?id=${docId}`, {
+      const res = await fetch(`/api/documents?id=${docId}`, {
         method: 'DELETE',
         headers: { 'X-Session-Key': getOrCreateHistorySessionKey() },
       })
