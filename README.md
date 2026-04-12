@@ -31,3 +31,6 @@ The UI calls same-origin `/api/upload` and `/api/generate-exam`, which map to `a
 ### Custom API URL (optional)
 
 If the API is hosted separately, set `VITE_API_BASE` in Vercel to the origin (e.g. `https://api.example.com`) and adjust the frontend `fetch` calls to use that base URL (not implemented by default).
+
+
+vercel remove testpdfquestions
