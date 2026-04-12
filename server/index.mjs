@@ -151,13 +151,14 @@ app.post('/api/documents', async (req, res) => {
   res.status(out.status).json(out.body)
 })
 
-app.delete('/api/documents/:id', async (req, res) => {
+app.delete('/api/documents', async (req, res) => {
   const sessionKey = parseSessionKey(req)
   if (!sessionKey) {
     res.status(400).json({ error: 'Missing or invalid X-Session-Key header' })
     return
   }
-  const out = await documentsDelete(sessionKey, req.params.id)
+  const id = req.query.id
+  const out = await documentsDelete(sessionKey, id)
   res.status(out.status).json(out.body)
 })
 
