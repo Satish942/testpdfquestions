@@ -17,26 +17,6 @@ function getOrCreateHistorySessionKey() {
   }
 }
 
-function loadSession() {
-  try {
-    const raw = localStorage.getItem(SESSION_KEY)
-    if (!raw) return null
-    const s = JSON.parse(raw)
-    const label = s?.sourceDisplayName || s?.pdfDisplayName
-    if (s?.fileSearchStoreName && label) {
-      return {
-        fileSearchStoreName: s.fileSearchStoreName,
-        sourceDisplayName: label,
-        questionCandidates:
-          typeof s.questionCandidates === 'number' ? s.questionCandidates : null,
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return null
-}
-
 const CLIENT_ALLOWED_EXT = new Set([
   'pdf',
   'txt',
@@ -73,21 +53,28 @@ function loadHistory() {
 }
 
 export default function App() {
-  const [tab, setTab] = useState('upload')
-  const [session, setSession] = useState(() => loadSession())
+  const [tab, setTab] = useState('library')
+  const [selectedDocument, setSelectedDocument] = useState(null)
+  
+  const [documents, setDocuments] = useState([])
   const [history, setHistory] = useState(() => loadHistory())
   const [serverHistoryEnabled, setServerHistoryEnabled] = useState(null)
   const [historySaveError, setHistorySaveError] = useState('')
   const serverHistorySeeded = useRef(false)
+  const serverDocsSeeded = useRef(false)
+
   const [questionCount, setQuestionCount] = useState(5)
   const [uploadBusy, setUploadBusy] = useState(false)
   const [uploadMsg, setUploadMsg] = useState('')
+  
+  // Exam state
   const [examBusy, setExamBusy] = useState(false)
   const [examError, setExamError] = useState('')
   const [questions, setQuestions] = useState([])
   const [answers, setAnswers] = useState({})
   const [phase, setPhase] = useState('idle')
   const [scoreSummary, setScoreSummary] = useState(null)
+  const [selectedHistory, setSelectedHistory] = useState(null)
 
   useEffect(() => {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history))
@@ -117,13 +104,12 @@ export default function App() {
           total: x.total,
           pct: x.pct,
           sourceDisplayName: x.sourceDisplayName || 'Exam',
+          questionCandidates: x.questionCandidates,
+          questions: x.questions,
+          answers: x.answers,
         }))
         setHistory((prev) => {
-          if (
-            !serverHistorySeeded.current &&
-            rows.length === 0 &&
-            prev.length > 0
-          ) {
+          if (!serverHistorySeeded.current && rows.length === 0 && prev.length > 0) {
             serverHistorySeeded.current = true
             return prev
           }
@@ -137,10 +123,20 @@ export default function App() {
     })()
   }, [])
 
-  const persistSession = useCallback((s) => {
-    setSession(s)
-    if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s))
-    else localStorage.removeItem(SESSION_KEY)
+  useEffect(() => {
+    const sessionKey = getOrCreateHistorySessionKey()
+    ;(async () => {
+      try {
+        const res = await fetch('/api/documents', {
+          headers: { 'X-Session-Key': sessionKey },
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) return
+        setDocuments(data.items || [])
+      } catch (e) {
+        console.warn('Documents API:', e)
+      }
+    })()
   }, [])
 
   const onUpload = async (file) => {
@@ -151,28 +147,52 @@ export default function App() {
       return
     }
     setUploadBusy(true)
-    setUploadMsg('Uploading and indexing your file (this can take a minute)…')
+    setUploadMsg('Uploading and processing your document (this can take a minute)…')
     const fd = new FormData()
     fd.append('document', file)
     try {
+      // 1. Upload file and store
       const res = await fetch('/api/upload', { method: 'POST', body: fd })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || res.statusText)
+      
       const label = data.sourceDisplayName || data.pdfDisplayName || file.name
-      const questionCandidates =
-        typeof data.questionCandidates === 'number'
-          ? data.questionCandidates
-          : null
-      persistSession({
-        fileSearchStoreName: data.fileSearchStoreName,
-        sourceDisplayName: label,
-        questionCandidates,
+      const questionCandidates = typeof data.questionCandidates === 'number' ? data.questionCandidates : 0
+
+      // 2. Generate large pool of questions for this document
+      const genRes = await fetch('/api/generate-exam', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileSearchStoreName: data.fileSearchStoreName,
+          questionCount: questionCandidates || 25,
+        }),
       })
-      const extra =
-        questionCandidates != null
-          ? ` ~${questionCandidates} question opportunities detected in the material.`
-          : ''
-      setUploadMsg(`Ready: ${label} is indexed for exams.${extra}`)
+      const genData = await genRes.json().catch(() => ({}))
+      if (!genRes.ok) throw new Error(genData.error || genRes.statusText)
+
+      // 3. Save document and its question pool to Firestore vault
+      const docRes = await fetch('/api/documents', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Key': getOrCreateHistorySessionKey(),
+        },
+        body: JSON.stringify({
+          sourceDisplayName: label,
+          questionCandidates: questionCandidates || genData.questions?.length || 0,
+          questions: genData.questions || []
+        })
+      })
+      
+      const docData = await docRes.json().catch(() => ({ 
+        error: 'Failed to parse server response. Please make sure you have restarted your server terminal.' 
+      }))
+      
+      if (!docRes.ok) throw new Error(docData.error || docRes.statusText)
+
+      setDocuments(prev => [docData, ...prev])
+      setUploadMsg(`Ready: ${label} has been added to your Library with ${docData.questions?.length} questions available.`)
     } catch (e) {
       setUploadMsg(e.message || 'Upload failed')
     } finally {
@@ -180,32 +200,48 @@ export default function App() {
     }
   }
 
-  const startExam = async () => {
-    if (!session) return
+  const deleteDocument = async (docId) => {
+    try {
+      const res = await fetch(`/api/documents/${docId}?id=${docId}`, {
+        method: 'DELETE',
+        headers: { 'X-Session-Key': getOrCreateHistorySessionKey() },
+      })
+      if (res.ok) {
+        setDocuments(prev => prev.filter(d => d.id !== docId))
+        if (selectedDocument?.id === docId) {
+          setSelectedDocument(null)
+          setTab('library')
+        }
+      }
+    } catch (e) {
+      console.error('Failed to delete document', e)
+    }
+  }
+
+  const startExam = () => {
+    if (!selectedDocument) return
     setExamBusy(true)
     setExamError('')
     setQuestions([])
     setAnswers({})
     setPhase('idle')
     setScoreSummary(null)
+    
     try {
-      const res = await fetch('/api/generate-exam', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fileSearchStoreName: session.fileSearchStoreName,
-          questionCount,
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error || res.statusText)
-      setQuestions(data.questions || [])
-      setPhase('taking')
-      setTab('exam')
+       const pool = selectedDocument.questions || []
+       if (pool.length === 0) {
+           throw new Error('No questions available in this document pool.')
+       }
+       // Randomly select questionCount questions from pool
+       const shuffled = [...pool].sort(() => 0.5 - Math.random())
+       const selected = shuffled.slice(0, Math.min(questionCount, pool.length))
+       
+       setQuestions(selected)
+       setPhase('taking')
     } catch (e) {
-      setExamError(e.message || 'Could not generate exam')
+       setExamError(e.message || 'Could not start exam')
     } finally {
-      setExamBusy(false)
+       setExamBusy(false)
     }
   }
 
@@ -220,15 +256,19 @@ export default function App() {
     setScoreSummary({ correct, total, pct })
     setPhase('results')
     setHistorySaveError('')
+    
     const entry = {
       id: crypto.randomUUID(),
       at: new Date().toISOString(),
       score: correct,
       total,
-      sourceDisplayName:
-        session?.sourceDisplayName || session?.pdfDisplayName || 'Exam',
+      sourceDisplayName: selectedDocument?.sourceDisplayName || 'Exam',
       pct,
+      questionCandidates: selectedDocument?.questionCandidates || 0,
+      questions,
+      answers,
     }
+    
     if (serverHistoryEnabled === true) {
       try {
         const res = await fetch('/api/exam-history', {
@@ -243,6 +283,9 @@ export default function App() {
             total: entry.total,
             pct: entry.pct,
             sourceDisplayName: entry.sourceDisplayName,
+            questionCandidates: entry.questionCandidates,
+            questions: entry.questions,
+            answers: entry.answers,
           }),
         })
         const data = await res.json().catch(() => ({}))
@@ -268,50 +311,45 @@ export default function App() {
     setExamError('')
   }
 
-  const sessionBadge = useMemo(() => {
-    if (!session) return null
-    return (
-      <span className="badge">
-        Indexed: {session.sourceDisplayName}
-      </span>
-    )
-  }, [session])
-
   return (
     <div className="app-shell">
       <header className="app-header">
-        <h1>Gemini RAG exam</h1>
+        <h1>Local Exam Vault</h1>
         <p className="app-sub">
-          Upload study material (PDF, Word, or text: notes, Q&amp;A, or existing multiple-choice).
-          It is indexed with Gemini File Search, then you generate a 4-option exam. Score history is stored in Firestore when the server has a Firebase <strong>service account</strong> configured; otherwise it stays in this browser only.
+          Upload study material to process and store a persistent question pool. Select a document from your library anytime to take an exam.
         </p>
       </header>
 
       <div className="glass tabs">
         <button
           type="button"
-          className={`tab ${tab === 'upload' ? 'tab-active' : ''}`}
-          onClick={() => setTab('upload')}
+          className={`tab ${tab === 'library' ? 'tab-active' : ''}`}
+          onClick={() => setTab('library')}
         >
-          1 · Upload material
+          1 · Library
         </button>
         <button
           type="button"
           className={`tab ${tab === 'exam' ? 'tab-active' : ''}`}
           onClick={() => setTab('exam')}
-          disabled={!session}
+          disabled={!selectedDocument}
         >
           2 · Exam
         </button>
+        <button
+          type="button"
+          className={`tab ${tab === 'history' ? 'tab-active' : ''}`}
+          onClick={() => setTab('history')}
+        >
+          3 · History
+        </button>
       </div>
 
-      {tab === 'upload' && (
+      {tab === 'library' && (
         <section className="glass panel">
           <h2>Upload study material</h2>
           <p className="muted" style={{ marginTop: '0.35rem' }}>
-            PDF, DOCX, TXT, Markdown, JSON, or CSV (max 100 MB). Plain Q&amp;A lists and
-            existing MCQ banks both work—the model adapts from what it retrieves.
-            API key stays on the dev server (<code>.env</code>), not in the bundle.
+            PDF, DOCX, TXT, Markdown, JSON, or CSV. API calls simulate generation but produce local mocks.
           </p>
 
           <label className="dropzone" style={{ marginTop: '1rem' }}>
@@ -328,98 +366,99 @@ export default function App() {
             {uploadBusy ? (
               <span>
                 <span className="spinner" aria-hidden />
-                Indexing…
+                Processing…
               </span>
             ) : (
-              <span>Click or drop a file here</span>
+              <span>Click or drop a file here to process and add to Library</span>
             )}
           </label>
 
-          <div className="row">
-            <div className="field">
-              <label htmlFor="qc">Questions per exam</label>
-              <input
-                id="qc"
-                type="number"
-                min={1}
-                max={50}
-                value={questionCount}
-                onChange={(e) =>
-                  setQuestionCount(
-                    Math.min(50, Math.max(1, Number(e.target.value) || 1)),
-                  )
-                }
-              />
-            </div>
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={!session || examBusy}
-              onClick={startExam}
-            >
-              {examBusy ? 'Generating…' : 'Generate & open exam'}
-            </button>
-          </div>
-
-          {sessionBadge}
-          {session && (
-            <div className="glass-inset stat-box" aria-live="polite">
-              <div className="stat-box-title">From your document</div>
-              <div className="stat-box-metric">
-                <span className="stat-box-label">Question opportunities detected</span>
-                <span className="stat-box-value">
-                  {session.questionCandidates != null
-                    ? session.questionCandidates
-                    : '—'}
-                </span>
-              </div>
-              <p className="muted stat-box-hint">
-                Model estimate after indexing (not the same as “questions per exam”).
-              </p>
-            </div>
-          )}
           {uploadMsg && (
             <p className={`status ${uploadMsg.includes('fail') || uploadMsg.includes('Please') ? 'status-error' : ''}`}>
               {uploadMsg}
             </p>
           )}
-          {examError && <p className="status status-error">{examError}</p>}
 
-          <div style={{ marginTop: '1.25rem' }}>
-            <button
-              type="button"
-              className="btn btn-ghost"
-              disabled={!session}
-              onClick={() => {
-                persistSession(null)
-                resetExam()
-                setUploadMsg('Cleared indexed material from this browser.')
-              }}
-            >
-              Clear indexed file
-            </button>
+          <div style={{ marginTop: '2rem' }}>
+            <h3>Your Document Vault</h3>
+            {documents.length === 0 ? (
+               <p className="muted" style={{ marginTop: '0.5rem' }}>No documents uploaded yet.</p>
+            ) : (
+               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
+                  {documents.map(d => (
+                     <div key={d.id} className="glass-inset" style={{ display: 'flex', alignItems: 'center', padding: '1rem' }}>
+                        <div>
+                           <strong>{d.sourceDisplayName}</strong>
+                           <div className="muted" style={{ fontSize: '0.85em', marginTop: '0.2rem' }}>
+                              {d.questions?.length || 0} questions available
+                           </div>
+                        </div>
+                        <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
+                           <button 
+                              type="button" 
+                              className="btn btn-primary" 
+                              onClick={() => {
+                                 setSelectedDocument(d)
+                                 setTab('exam')
+                                 resetExam()
+                              }}
+                           >
+                              Select &amp; Test
+                           </button>
+                           <button 
+                              type="button" 
+                              className="btn btn-ghost"
+                              style={{ color: '#f87171', border: '1px solid rgba(248, 113, 113, 0.3)' }}
+                              onClick={() => deleteDocument(d.id)}
+                           >
+                              Remove
+                           </button>
+                        </div>
+                     </div>
+                  ))}
+               </div>
+            )}
           </div>
         </section>
       )}
 
-      {tab === 'exam' && session && (
+      {tab === 'exam' && selectedDocument && (
         <section className="glass panel">
-          <h2>Exam</h2>
+          <h2>Exam Mode</h2>
           <p className="muted" style={{ marginTop: '0.35rem' }}>
-            {session.sourceDisplayName} · {questions.length || questionCount} question
-            {(questions.length || questionCount) !== 1 ? 's' : ''}
+            Document: <strong>{selectedDocument.sourceDisplayName}</strong>
           </p>
 
           {!questions.length && (
-            <div style={{ marginTop: '1rem' }}>
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={examBusy}
-                onClick={startExam}
-              >
-                {examBusy ? 'Generating…' : `Generate ${questionCount} questions`}
-              </button>
+            <div style={{ marginTop: '1.5rem' }}>
+              <div className="row" style={{ alignItems: 'flex-end', marginBottom: '1rem' }}>
+                <div className="field">
+                  <label htmlFor="qc">Number of questions to take:</label>
+                  <input
+                    id="qc"
+                    type="number"
+                    min={1}
+                    max={selectedDocument.questions?.length || 50}
+                    value={questionCount}
+                    onChange={(e) =>
+                      setQuestionCount(
+                        Math.min(selectedDocument.questions?.length || 50, Math.max(1, Number(e.target.value) || 1)),
+                      )
+                    }
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={examBusy}
+                  onClick={startExam}
+                >
+                  Start Exam
+                </button>
+              </div>
+              <p className="muted stat-box-hint">
+                You have {selectedDocument.questions?.length || 0} questions available in this document's pool.
+              </p>
               {examError && <p className="status status-error">{examError}</p>}
             </div>
           )}
@@ -467,51 +506,107 @@ export default function App() {
           ))}
 
           {questions.length > 0 && phase === 'taking' && (
-            <button type="button" className="btn btn-primary" onClick={submitExam}>
+            <button type="button" className="btn btn-primary" onClick={submitExam} style={{ marginTop: '1rem' }}>
               Submit answers
             </button>
           )}
 
           {questions.length > 0 && phase === 'results' && (
-            <button type="button" className="btn btn-ghost" style={{ marginLeft: '0.5rem' }} onClick={resetExam}>
-              Clear exam (keep indexed file)
+            <button type="button" className="btn btn-ghost" style={{ marginTop: '1rem' }} onClick={() => {
+                resetExam()
+                setTab('library')
+            }}>
+              Try another exam
             </button>
           )}
         </section>
       )}
 
-      <section className="glass history">
-        <h2>Score history</h2>
-        <p className="muted">
-          {serverHistoryEnabled === true
-            ? 'Last 50 attempts loaded from Firestore for this browser (server uses your Firebase service account).'
-            : serverHistoryEnabled === false
-              ? 'Stored locally only. Set FIREBASE_SERVICE_ACCOUNT_B64 (or JSON) on the server per `.env.example` to enable cloud history.'
-              : 'Loading history…'}
-        </p>
-        {historySaveError && (
-          <p className="status status-error">{historySaveError}</p>
-        )}
-        {history.length === 0 ? (
-          <p className="muted" style={{ marginTop: '0.5rem' }}>
-            No attempts yet.
-          </p>
-        ) : (
-          <ul>
-            {history.map((h) => (
-              <li key={h.id}>
-                <span>
-                  {new Date(h.at).toLocaleString()} —{' '}
-                  {h.sourceDisplayName || h.pdfDisplayName || 'Exam'}
-                </span>
-                <strong>
-                  {h.score}/{h.total} ({h.pct}%)
-                </strong>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      {tab === 'history' && (
+         <section className="glass panel history">
+           <h2>Score history</h2>
+           <p className="muted" style={{ marginTop: '0.35rem' }}>
+             {serverHistoryEnabled === true
+               ? 'Your historical exam performance.'
+               : serverHistoryEnabled === false
+                 ? 'Stored locally only. Set FIREBASE_SERVICE_ACCOUNT_B64 on the server to enable cloud history.'
+                 : 'Loading history…'}
+           </p>
+           {historySaveError && (
+             <p className="status status-error">{historySaveError}</p>
+           )}
+           {history.length === 0 ? (
+             <p className="muted" style={{ marginTop: '1.5rem' }}>
+               No attempts yet.
+             </p>
+           ) : (
+             <ul style={{ marginTop: '1.5rem' }}>
+               {history.map((h) => (
+                 <li key={h.id}>
+                   <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
+                     <span>
+                       {new Date(h.at).toLocaleString()} —{' '}
+                       {h.sourceDisplayName || h.pdfDisplayName || 'Exam'}
+                       {h.questionCandidates != null && (
+                         <span style={{ color: 'orange', marginLeft: '0.5rem' }}>
+                           ({h.total} questions taken)
+                         </span>
+                       )}
+                     </span>
+                     <strong style={{ marginLeft: 'auto' }}>
+                       {h.score}/{h.total} ({h.pct}%)
+                     </strong>
+                     {h.questions && h.answers && (
+                       <button
+                         type="button"
+                         className="btn btn-ghost"
+                         style={{ marginLeft: '1rem', padding: '2px 8px', fontSize: '0.8rem' }}
+                         onClick={() => setSelectedHistory(selectedHistory?.id === h.id ? null : h)}
+                       >
+                         {selectedHistory?.id === h.id ? 'Hide details' : 'View details'}
+                       </button>
+                     )}
+                   </div>
+                   {selectedHistory?.id === h.id && selectedHistory.questions && selectedHistory.answers && (
+                     <div className="history-details" style={{ marginTop: '1rem', paddingLeft: '1rem', borderLeft: '2px solid rgba(255,255,255,0.2)' }}>
+                       {selectedHistory.questions.map((q, qi) => (
+                         <div key={q.id} className="history-question-block" style={{ marginBottom: '1rem' }}>
+                           <div className="question-title" style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}>
+                             {qi + 1}. {q.question}
+                           </div>
+                           {q.options.map((opt, oi) => {
+                             const selected = selectedHistory.answers[q.id] === oi
+                             const isCorrect = oi === q.correctIndex
+                             let color = 'inherit'
+                             let label = ''
+
+                             if (selected && isCorrect) {
+                               color = '#4ade80'
+                               label = '✓ (Your Answer - Correct)'
+                             } else if (selected && !isCorrect) {
+                               color = '#f87171'
+                               label = '✗ (Your Answer - Incorrect)'
+                             } else if (!selected && isCorrect) {
+                               color = '#4ade80'
+                               label = '✓ (Correct Answer)'
+                             }
+
+                             return (
+                               <div key={oi} style={{ fontSize: '0.85rem', color, marginLeft: '1rem', opacity: isCorrect || selected ? 1 : 0.6 }}>
+                                 {String.fromCharCode(65 + oi)}. {opt} <strong style={{ marginLeft: '0.5rem' }}>{label}</strong>
+                               </div>
+                             )
+                           })}
+                         </div>
+                       ))}
+                     </div>
+                   )}
+                 </li>
+               ))}
+             </ul>
+           )}
+         </section>
+      )}
     </div>
   )
 }

@@ -11,12 +11,16 @@ import {
   parseSessionKey,
 } from '../lib/exam-history-api.mjs'
 import {
-  createAi,
+  documentsGet,
+  documentsPost,
+  documentsDelete,
+} from '../lib/document-api.mjs'
+import {
   isAllowedUpload,
   mimeForFileSearch,
   runFileSearchUpload,
   runGenerateExam,
-} from '../lib/gemini-api.mjs'
+} from '../lib/mock-api.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const UPLOAD_DIR = path.join(__dirname, '..', 'uploads')
@@ -25,13 +29,7 @@ if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true })
 }
 
-const apiKey = process.env.GEMINI_API_KEY
-if (!apiKey) {
-  console.error('Missing GEMINI_API_KEY in .env')
-  process.exit(1)
-}
-
-const ai = createAi()
+const ai = null
 
 const upload = multer({
   dest: UPLOAD_DIR,
@@ -102,8 +100,8 @@ app.post('/api/generate-exam', async (req, res) => {
     res.status(400).json({ error: 'fileSearchStoreName is required' })
     return
   }
-  if (!Number.isFinite(n) || n < 1 || n > 50) {
-    res.status(400).json({ error: 'questionCount must be between 1 and 50' })
+  if (!Number.isFinite(n) || n < 1 || n > 500) {
+    res.status(400).json({ error: 'questionCount must be between 1 and 500' })
     return
   }
 
@@ -133,6 +131,36 @@ app.get('/api/exam-history', async (req, res) => {
   res.status(out.status).json(out.body)
 })
 
+app.get('/api/documents', async (req, res) => {
+  const sessionKey = parseSessionKey(req)
+  if (!sessionKey) {
+    res.status(400).json({ error: 'Missing or invalid X-Session-Key header' })
+    return
+  }
+  const out = await documentsGet(sessionKey)
+  res.status(out.status).json(out.body)
+})
+
+app.post('/api/documents', async (req, res) => {
+  const sessionKey = parseSessionKey(req)
+  if (!sessionKey) {
+    res.status(400).json({ error: 'Missing or invalid X-Session-Key header' })
+    return
+  }
+  const out = await documentsPost(sessionKey, req.body || {})
+  res.status(out.status).json(out.body)
+})
+
+app.delete('/api/documents/:id', async (req, res) => {
+  const sessionKey = parseSessionKey(req)
+  if (!sessionKey) {
+    res.status(400).json({ error: 'Missing or invalid X-Session-Key header' })
+    return
+  }
+  const out = await documentsDelete(sessionKey, req.params.id)
+  res.status(out.status).json(out.body)
+})
+
 app.post('/api/exam-history', async (req, res) => {
   const sessionKey = parseSessionKey(req)
   if (!sessionKey) {
@@ -147,6 +175,6 @@ app.post('/api/exam-history', async (req, res) => {
 })
 
 const PORT = Number(process.env.PORT) || 8787
-app.listen(PORT, () => {
-  console.log(`API server http://localhost:${PORT}`)
+app.listen(PORT, '127.0.0.1', () => {
+  console.log(`API server http://127.0.0.1:${PORT}`)
 })

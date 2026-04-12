@@ -1,4 +1,4 @@
-import { createAi, runGenerateExam } from '../lib/gemini-api.mjs'
+import { runGenerateExam } from '../lib/mock-api.mjs'
 
 async function readJsonBody(req) {
   const chunks = []
@@ -20,13 +20,7 @@ export default async function handler(req, res) {
     return
   }
 
-  let ai
-  try {
-    ai = createAi()
-  } catch {
-    res.status(500).json({ error: 'Server missing GEMINI_API_KEY' })
-    return
-  }
+  let ai = null
 
   let body
   try {
@@ -42,8 +36,8 @@ export default async function handler(req, res) {
     res.status(400).json({ error: 'fileSearchStoreName is required' })
     return
   }
-  if (!Number.isFinite(n) || n < 1 || n > 50) {
-    res.status(400).json({ error: 'questionCount must be between 1 and 50' })
+  if (!Number.isFinite(n) || n < 1 || n > 500) {
+    res.status(400).json({ error: 'questionCount must be between 1 and 500' })
     return
   }
 

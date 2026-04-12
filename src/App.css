@@ -215,6 +215,8 @@
   font-weight: 600;
   margin-bottom: 0.75rem;
   font-size: 0.98rem;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .option {
@@ -227,6 +229,8 @@
   cursor: pointer;
   border: 1px solid transparent;
   transition: background 0.15s, border-color 0.15s;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .option:hover {

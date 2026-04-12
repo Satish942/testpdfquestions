@@ -2,11 +2,10 @@ import fs from 'fs'
 import os from 'os'
 import formidable from 'formidable'
 import {
-  createAi,
   isAllowedUpload,
   mimeForFileSearch,
   runFileSearchUpload,
-} from '../lib/gemini-api.mjs'
+} from '../lib/mock-api.mjs'
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -14,13 +13,7 @@ export default async function handler(req, res) {
     return
   }
 
-  let ai
-  try {
-    ai = createAi()
-  } catch {
-    res.status(500).json({ error: 'Server missing GEMINI_API_KEY' })
-    return
-  }
+  let ai = null
 
   const form = formidable({
     uploadDir: os.tmpdir(),
