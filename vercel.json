@@ -12,7 +12,8 @@
   "functions": {
     "api/upload.mjs": {
       "maxDuration": 120,
-      "memory": 1024
+      "memory": 1024,
+      "includeFiles": "node_modules/pdf-parse/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"
     },
     "api/generate-exam.mjs": {
       "maxDuration": 120,
