@@ -78,7 +78,10 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history))
-  }, [history])
+    if (tab === 'history' && !selectedHistory && history.length > 0) {
+      setSelectedHistory(history[0])
+    }
+  }, [history, tab, selectedHistory])
 
   useEffect(() => {
     const sessionKey = getOrCreateHistorySessionKey()
@@ -510,89 +513,101 @@ export default function App() {
       )}
 
       {tab === 'history' && (
-         <section className="glass panel history">
-           <h2>Score history</h2>
-           <p className="muted" style={{ marginTop: '0.35rem' }}>
-             {serverHistoryEnabled === true
-               ? 'Your historical exam performance.'
-               : serverHistoryEnabled === false
-                 ? 'Stored locally only. Set FIREBASE_SERVICE_ACCOUNT_B64 on the server to enable cloud history.'
-                 : 'Loading history…'}
-           </p>
-           {historySaveError && (
-             <p className="status status-error">{historySaveError}</p>
-           )}
-           {history.length === 0 ? (
-             <p className="muted" style={{ marginTop: '1.5rem' }}>
-               No attempts yet.
-             </p>
-           ) : (
-             <ul style={{ marginTop: '1.5rem' }}>
-               {history.map((h) => (
-                 <li key={h.id}>
-                   <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
-                     <span>
-                       {new Date(h.at).toLocaleString()} —{' '}
-                       {h.sourceDisplayName || h.pdfDisplayName || 'Exam'}
-                       {h.questionCandidates != null && (
-                         <span style={{ color: 'orange', marginLeft: '0.5rem' }}>
-                           ({h.total} questions taken)
-                         </span>
-                       )}
-                     </span>
-                     <strong style={{ marginLeft: 'auto' }}>
-                       {h.score}/{h.total} ({h.pct}%)
-                     </strong>
-                     {h.questions && h.answers && (
-                       <button
-                         type="button"
-                         className="btn btn-ghost"
-                         style={{ marginLeft: '1rem', padding: '2px 8px', fontSize: '0.8rem' }}
-                         onClick={() => setSelectedHistory(selectedHistory?.id === h.id ? null : h)}
-                       >
-                         {selectedHistory?.id === h.id ? 'Hide details' : 'View details'}
-                       </button>
-                     )}
-                   </div>
-                   {selectedHistory?.id === h.id && selectedHistory.questions && selectedHistory.answers && (
-                     <div className="history-details" style={{ marginTop: '1rem', paddingLeft: '1rem', borderLeft: '2px solid rgba(255,255,255,0.2)' }}>
-                       {selectedHistory.questions.map((q, qi) => (
-                         <div key={q.id} className="history-question-block" style={{ marginBottom: '1rem' }}>
-                           <div className="question-title" style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}>
-                             {qi + 1}. {q.question}
-                           </div>
-                           {q.options.map((opt, oi) => {
-                             const selected = selectedHistory.answers[q.id] === oi
-                             const isCorrect = oi === q.correctIndex
-                             let color = 'inherit'
-                             let label = ''
+        <section className="glass panel history-panel">
+          <div className="history-header">
+            <h2>Score history</h2>
+            <p className="muted" style={{ marginTop: '0.35rem' }}>
+              {serverHistoryEnabled === true
+                ? 'Your historical exam performance.'
+                : serverHistoryEnabled === false
+                  ? 'Stored locally only. Set FIREBASE_SERVICE_ACCOUNT_B64 on the server to enable cloud history.'
+                  : 'Loading history…'}
+            </p>
+            {historySaveError && (
+              <p className="status status-error" style={{ marginTop: '0.5rem' }}>{historySaveError}</p>
+            )}
+          </div>
 
-                             if (selected && isCorrect) {
-                               color = '#4ade80'
-                               label = '✓ (Your Answer - Correct)'
-                             } else if (selected && !isCorrect) {
-                               color = '#f87171'
-                               label = '✗ (Your Answer - Incorrect)'
-                             } else if (!selected && isCorrect) {
-                               color = '#4ade80'
-                               label = '✓ (Correct Answer)'
-                             }
+          {history.length === 0 ? (
+            <div className="empty-state">
+              <p className="muted">No attempts yet. Complete an exam to see your history here.</p>
+            </div>
+          ) : (
+            <div className="history-grid">
+              <div className="history-sidebar">
+                {history.map((h) => (
+                  <div
+                    key={h.id}
+                    className={`history-item ${selectedHistory?.id === h.id ? 'active' : ''}`}
+                    onClick={() => setSelectedHistory(h)}
+                  >
+                    <div className="history-item-top">
+                      <span className="history-date">{new Date(h.at).toLocaleDateString()}</span>
+                      <span className="history-score">{h.score}/{h.total}</span>
+                    </div>
+                    <div className="history-source">{h.sourceDisplayName || 'Exam'}</div>
+                    <div className="history-pct-bar">
+                      <div className="history-pct-fill" style={{ width: `${h.pct}%`, background: h.pct >= 70 ? '#4ade80' : h.pct >= 40 ? '#fbbf24' : '#f87171' }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
 
-                             return (
-                               <div key={oi} style={{ fontSize: '0.85rem', color, marginLeft: '1rem', opacity: isCorrect || selected ? 1 : 0.6 }}>
-                                 {String.fromCharCode(65 + oi)}. {opt} <strong style={{ marginLeft: '0.5rem' }}>{label}</strong>
-                               </div>
-                             )
-                           })}
-                         </div>
-                       ))}
-                     </div>
-                   )}
-                 </li>
-               ))}
-             </ul>
-           )}
-         </section>
+              <div className="history-content">
+                {selectedHistory ? (
+                  <div className="history-details">
+                    <div className="history-details-header">
+                      <h3>{selectedHistory.sourceDisplayName}</h3>
+                      <p className="muted">{new Date(selectedHistory.at).toLocaleString()}</p>
+                      <div className="history-stats">
+                        <div className="stat">
+                          <span className="stat-label">Score</span>
+                          <span className="stat-value">{selectedHistory.score}/{selectedHistory.total}</span>
+                        </div>
+                        <div className="stat">
+                          <span className="stat-label">Accuracy</span>
+                          <span className="stat-value">{selectedHistory.pct}%</span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="history-questions">
+                      {selectedHistory.questions?.map((q, qi) => (
+                        <div key={q.id} className="history-q-block">
+                          <div className="history-q-text">{qi + 1}. {q.question}</div>
+                          <div className="history-options">
+                            {q.options.map((opt, oi) => {
+                              const selected = selectedHistory.answers?.[q.id] === oi
+                              const isCorrect = oi === q.correctIndex
+                              let statusClass = ''
+                              if (selected && isCorrect) statusClass = 'correct user-selected'
+                              else if (selected && !isCorrect) statusClass = 'wrong user-selected'
+                              else if (!selected && isCorrect) statusClass = 'correct'
+
+                              return (
+                                <div key={oi} className={`history-opt ${statusClass}`}>
+                                  <span className="opt-letter">{String.fromCharCode(65 + oi)}</span>
+                                  <span className="opt-text">{opt}</span>
+                                  {selected && isCorrect && <span className="opt-tag tag-correct">Correct</span>}
+                                  {selected && !isCorrect && <span className="opt-tag tag-wrong">Your Answer</span>}
+                                  {!selected && isCorrect && <span className="opt-tag tag-answer">Correct Answer</span>}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="history-empty-selection">
+                    <p>Select an exam attempt from the left to view detailed results.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
       )}
     </div>
   )
