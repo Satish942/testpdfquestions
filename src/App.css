@@ -239,6 +239,52 @@
 
 .option input {
   margin-top: 0.2rem;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid rgba(0, 0, 0, 0.2);
+  background: #fff;
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.option input[type='radio'] {
+  border-radius: 50%;
+}
+
+.option input[type='checkbox'] {
+  border-radius: 4px;
+}
+
+.option input:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.option input[type='radio']:checked::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.option input[type='checkbox']:checked::after {
+  content: '✓';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
 }
 
 .option-correct {
@@ -500,4 +546,75 @@
   to {
     transform: rotate(360deg);
   }
+}
+.keysheet-container {
+  max-width: 100%;
+}
+
+.chapter-key-section {
+  padding: 1.5rem;
+  transition: transform 0.2s;
+}
+
+.chapter-key-section:hover {
+  transform: translateY(-2px);
+}
+
+.keys-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 1rem;
+}
+
+.key-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem;
+  background: rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 10px;
+  font-size: 0.9rem;
+}
+
+.key-item strong {
+  color: var(--correct);
+  background: var(--correct-bg);
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.keysheet-layout {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: 2rem;
+  align-items: flex-start;
+}
+
+@media (max-width: 900px) {
+  .keysheet-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.keysheet-main-view {
+  flex: 1;
+}
+
+.keysheet-map-sidebar {
+  background: rgba(255, 255, 255, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  max-height: 80vh;
+  overflow-y: auto;
+  position: sticky;
+  top: 1rem;
+}
+
+.map-entry {
+  padding: 0.4rem 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.map-entry:last-child {
+  border-bottom: none;
 }

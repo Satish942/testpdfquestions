@@ -1,11 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
-const SESSION_KEY = 'rag-gemini-session'
-const HISTORY_KEY = 'rag-gemini-score-history'
 const HISTORY_SESSION_KEY = 'rag-exam-history-session'
 
-function getOrCreateHistorySessionKey() {
+function getOrCreateSessionKey() {
   try {
     let k = localStorage.getItem(HISTORY_SESSION_KEY)
     if (k && /^[0-9a-f-]{36}$/i.test(k)) return k
@@ -17,56 +15,31 @@ function getOrCreateHistorySessionKey() {
   }
 }
 
-const CLIENT_ALLOWED_EXT = new Set([
-  'pdf',
-  'txt',
-  'md',
-  'markdown',
-  'json',
-  'csv',
-  'docx',
-])
+const CLIENT_ALLOWED_EXT = new Set(['pdf', 'txt', 'md', 'markdown', 'json', 'csv', 'docx'])
 
 function clientAllowedFile(file) {
   const ext = file.name?.split('.').pop()?.toLowerCase()
   if (ext && CLIENT_ALLOWED_EXT.has(ext)) return true
   const m = (file.type || '').split(';')[0].trim().toLowerCase()
-  const ok =
+  return (
     m === 'application/pdf' ||
     m === 'text/plain' ||
     m === 'text/markdown' ||
     m === 'application/json' ||
     m === 'text/csv' ||
     m.includes('wordprocessingml.document')
-  return ok
-}
-
-function loadHistory() {
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY)
-    if (!raw) return []
-    const h = JSON.parse(raw)
-    return Array.isArray(h) ? h : []
-  } catch {
-    return []
-  }
+  )
 }
 
 export default function App() {
   const [tab, setTab] = useState('library')
   const [selectedDocument, setSelectedDocument] = useState(null)
-  
   const [documents, setDocuments] = useState([])
-  const [history, setHistory] = useState(() => loadHistory())
-  const [serverHistoryEnabled, setServerHistoryEnabled] = useState(null)
-  const [historySaveError, setHistorySaveError] = useState('')
-  const serverHistorySeeded = useRef(false)
-  const serverDocsSeeded = useRef(false)
 
   const [questionCount, setQuestionCount] = useState(5)
   const [uploadBusy, setUploadBusy] = useState(false)
   const [uploadMsg, setUploadMsg] = useState('')
-  
+
   // Exam state
   const [examBusy, setExamBusy] = useState(false)
   const [examError, setExamError] = useState('')
@@ -74,79 +47,27 @@ export default function App() {
   const [answers, setAnswers] = useState({})
   const [phase, setPhase] = useState('idle')
   const [scoreSummary, setScoreSummary] = useState(null)
-  const [selectedHistory, setSelectedHistory] = useState(null)
 
+  // Load documents on mount
   useEffect(() => {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history))
-    if (tab === 'history' && !selectedHistory && history.length > 0) {
-      setSelectedHistory(history[0])
-    }
-  }, [history, tab, selectedHistory])
-
-  useEffect(() => {
-    const sessionKey = getOrCreateHistorySessionKey()
-    ;(async () => {
-      try {
-        const res = await fetch('/api/exam-history', {
-          headers: { 'X-Session-Key': sessionKey },
-        })
-        const data = await res.json().catch(() => ({}))
-        if (res.status === 503 && data.disabled) {
-          setServerHistoryEnabled(false)
-          return
+    const sessionKey = getOrCreateSessionKey()
+      ; (async () => {
+        try {
+          const res = await fetch('/api/documents', {
+            headers: { 'X-Session-Key': sessionKey },
+          })
+          const data = await res.json().catch(() => ({}))
+          if (!res.ok) return
+          setDocuments(data.items || [])
+        } catch (e) {
+          console.warn('Documents API:', e)
         }
-        if (!res.ok) {
-          setServerHistoryEnabled(false)
-          return
-        }
-        setServerHistoryEnabled(true)
-        const rows = (data.items || []).map((x) => ({
-          id: x.id,
-          at: x.at,
-          score: x.score,
-          total: x.total,
-          pct: x.pct,
-          sourceDisplayName: x.sourceDisplayName || 'Exam',
-          questionCandidates: x.questionCandidates,
-          questions: x.questions,
-          answers: x.answers,
-        }))
-        setHistory((prev) => {
-          if (!serverHistorySeeded.current && rows.length === 0 && prev.length > 0) {
-            serverHistorySeeded.current = true
-            return prev
-          }
-          serverHistorySeeded.current = true
-          return rows
-        })
-      } catch (e) {
-        console.warn('Exam history API:', e)
-        setServerHistoryEnabled(false)
-      }
-    })()
-  }, [])
-
-  useEffect(() => {
-    const sessionKey = getOrCreateHistorySessionKey()
-    ;(async () => {
-      try {
-        const res = await fetch('/api/documents', {
-          headers: { 'X-Session-Key': sessionKey },
-        })
-        const data = await res.json().catch(() => ({}))
-        if (!res.ok) return
-        setDocuments(data.items || [])
-      } catch (e) {
-        console.warn('Documents API:', e)
-      }
-    })()
+      })()
   }, [])
 
   const onUpload = async (file) => {
     if (!file || !clientAllowedFile(file)) {
-      setUploadMsg(
-        'Please choose a supported file: PDF, TXT, MD, JSON, CSV, or DOCX.',
-      )
+      setUploadMsg('Please choose a supported file: PDF, TXT, MD, JSON, CSV, or DOCX.')
       return
     }
     setUploadBusy(true)
@@ -154,35 +75,35 @@ export default function App() {
     const fd = new FormData()
     fd.append('document', file)
     try {
-      // 1. Upload file and store
       const res = await fetch('/api/upload', { method: 'POST', body: fd })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || res.statusText)
-      
+
       const label = data.sourceDisplayName || file.name
-      const questions = data.questions || []
+      const questionsFromData = data.questions || []
 
       const docRes = await fetch('/api/documents', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Session-Key': getOrCreateHistorySessionKey(),
+          'X-Session-Key': getOrCreateSessionKey(),
         },
         body: JSON.stringify({
           sourceDisplayName: label,
-          questionCandidates: questions.length,
-          questions: questions
-        })
+          questions: questionsFromData,
+          keySheetList: data.keySheetList || [],
+          docType: data.docType || 'plain',
+        }),
       })
-      
-      const docData = await docRes.json().catch(() => ({ 
-        error: 'Failed to parse server response. Please make sure you have restarted your server terminal.' 
-      }))
-      
+
+      const docData = await docRes.json().catch(() => ({ error: 'Failed to parse response.' }))
       if (!docRes.ok) throw new Error(docData.error || docRes.statusText)
 
-      setDocuments(prev => [docData, ...prev])
-      setUploadMsg(`Ready: ${label} has been added to your Library with ${docData.questions?.length} questions available.`)
+      setDocuments((prev) => [docData, ...prev])
+      const chapCount = (docData.keySheetList || []).length
+      setUploadMsg(
+        `✅ Processed: ${docData.questions?.length || 0} questions across ${chapCount} chapter(s) — "${label}" added to Library.`
+      )
     } catch (e) {
       setUploadMsg(e.message || 'Upload failed')
     } finally {
@@ -194,10 +115,10 @@ export default function App() {
     try {
       const res = await fetch(`/api/documents?id=${docId}`, {
         method: 'DELETE',
-        headers: { 'X-Session-Key': getOrCreateHistorySessionKey() },
+        headers: { 'X-Session-Key': getOrCreateSessionKey() },
       })
       if (res.ok) {
-        setDocuments(prev => prev.filter(d => d.id !== docId))
+        setDocuments((prev) => prev.filter((d) => d.id !== docId))
         if (selectedDocument?.id === docId) {
           setSelectedDocument(null)
           setTab('library')
@@ -216,81 +137,81 @@ export default function App() {
     setAnswers({})
     setPhase('idle')
     setScoreSummary(null)
-    
+
     try {
-       const pool = selectedDocument.questions || []
-       if (pool.length === 0) {
-           throw new Error('No questions available in this document pool.')
-       }
-       // Randomly select questionCount questions from pool
-       const shuffled = [...pool].sort(() => 0.5 - Math.random())
-       const selected = shuffled.slice(0, Math.min(questionCount, pool.length))
-       
-       setQuestions(selected)
-       setPhase('taking')
+      const pool = selectedDocument.questions || []
+      if (pool.length === 0) throw new Error('No questions available.')
+
+      // Sort: chapter order, then by qNum within chapter
+      const sortedPool = [...pool].sort((a, b) => {
+        const ca = parseInt(a.chapter?.match(/\d+/)?.[0] || 0)
+        const cb = parseInt(b.chapter?.match(/\d+/)?.[0] || 0)
+        if (ca !== cb) return ca - cb
+        return parseInt(a.qNum || 0) - parseInt(b.qNum || 0)
+      })
+
+      let enriched
+      if (selectedDocument.docType === 'chapters') {
+        // ── Chapter-wise doc: build flat sequential answer array from keySheetList ──
+        const flatCorrects = []
+        const sortedChapters = [...(selectedDocument.keySheetList || [])].sort(
+          (a, b) =>
+            parseInt(a.chapter.match(/\d+/)?.[0] || 0) -
+            parseInt(b.chapter.match(/\d+/)?.[0] || 0)
+        )
+        for (const chEntry of sortedChapters) {
+          const sortedPairs = Object.entries(chEntry.answers || {}).sort(
+            (a, b) =>
+              parseInt(a[0].match(/\d+/)?.[0] || 0) -
+              parseInt(b[0].match(/\d+/)?.[0] || 0)
+          )
+          for (const [, letters] of sortedPairs) {
+            const indices = [...(letters || '').matchAll(/([A-Fa-f])/g)].map(m => m[1].toUpperCase().charCodeAt(0) - 65)
+            flatCorrects.push(indices)
+          }
+        }
+        enriched = sortedPool.map((q, i) => {
+          const indices = flatCorrects[i] || (q.correctIndices && q.correctIndices.length > 0 ? q.correctIndices : [q.correctIndex || 0])
+          return {
+            ...q,
+            correctIndices: indices,
+            correctIndex: indices[0],
+          }
+        })
+      } else {
+        // ── Plain doc: ensure correctIndices is present ──
+        enriched = sortedPool.map(q => ({
+          ...q,
+          correctIndices: q.correctIndices || [q.correctIndex || 0]
+        }))
+      }
+
+      setQuestions(enriched.slice(0, Math.min(questionCount, enriched.length)))
+      setPhase('taking')
     } catch (e) {
-       setExamError(e.message || 'Could not start exam')
+      setExamError(e.message || 'Could not start exam')
     } finally {
-       setExamBusy(false)
+      setExamBusy(false)
     }
   }
 
-  const submitExam = async () => {
+  const submitExam = () => {
     if (!questions.length) return
     let correct = 0
     for (const q of questions) {
-      if (answers[q.id] === q.correctIndex) correct += 1
+      const correctIndices = q.correctIndices || [q.correctIndex || 0]
+      const chosen = answers[q.id]
+      const chosenIndices = Array.isArray(chosen) ? chosen : (chosen !== undefined ? [chosen] : [])
+
+      const isCorrect = correctIndices.length === chosenIndices.length &&
+        correctIndices.every(idx => chosenIndices.includes(idx))
+
+      if (isCorrect) correct += 1
     }
     const total = questions.length
     const pct = total ? Math.round((correct / total) * 1000) / 10 : 0
     setScoreSummary({ correct, total, pct })
     setPhase('results')
-    setHistorySaveError('')
-    
-    const entry = {
-      id: crypto.randomUUID(),
-      at: new Date().toISOString(),
-      score: correct,
-      total,
-      sourceDisplayName: selectedDocument?.sourceDisplayName || 'Exam',
-      pct,
-      questionCandidates: selectedDocument?.questionCandidates || 0,
-      questions,
-      answers,
-    }
-    
-    if (serverHistoryEnabled === true) {
-      try {
-        const res = await fetch('/api/exam-history', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Session-Key': getOrCreateHistorySessionKey(),
-          },
-          body: JSON.stringify({
-            at: entry.at,
-            score: entry.score,
-            total: entry.total,
-            pct: entry.pct,
-            sourceDisplayName: entry.sourceDisplayName,
-            questionCandidates: entry.questionCandidates,
-            questions: entry.questions,
-            answers: entry.answers,
-          }),
-        })
-        const data = await res.json().catch(() => ({}))
-        if (!res.ok) {
-          throw new Error(data.error || 'Could not save exam history')
-        }
-        const saved = { ...entry, id: data.id || entry.id }
-        setHistory((h) => [saved, ...h].slice(0, 50))
-      } catch (e) {
-        setHistorySaveError(e.message || 'Could not save to Firestore')
-        setHistory((h) => [entry, ...h].slice(0, 50))
-      }
-    } else {
-      setHistory((h) => [entry, ...h].slice(0, 50))
-    }
   }
 
   const resetExam = () => {
@@ -304,48 +225,31 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <h1>Local Exam Vault</h1>
-        <p className="app-sub">
-          Upload study material to process and store a persistent question pool. Select a document from your library anytime to take an exam.
-        </p>
+        <h1>Exam Vault</h1>
+        <p className="app-sub">Process and study material with automated key mapping.</p>
       </header>
 
       <div className="glass tabs">
-        <button
-          type="button"
-          className={`tab ${tab === 'library' ? 'tab-active' : ''}`}
-          onClick={() => setTab('library')}
-        >
-          1 · Library
-        </button>
-        <button
-          type="button"
-          className={`tab ${tab === 'exam' ? 'tab-active' : ''}`}
-          onClick={() => setTab('exam')}
-          disabled={!selectedDocument}
-        >
-          2 · Exam
-        </button>
-        <button
-          type="button"
-          className={`tab ${tab === 'history' ? 'tab-active' : ''}`}
-          onClick={() => setTab('history')}
-        >
-          3 · History
-        </button>
+        {['library', 'exam', 'keysheet'].map((t) => (
+          <button
+            key={t}
+            type="button"
+            className={`tab ${tab === t ? 'tab-active' : ''}`}
+            onClick={() => setTab(t)}
+            disabled={t === 'exam' && !selectedDocument}
+          >
+            {t === 'keysheet' ? 'Key Sheet' : t.charAt(0).toUpperCase() + t.slice(1)}
+          </button>
+        ))}
       </div>
 
+      {/* ── LIBRARY ── */}
       {tab === 'library' && (
         <section className="glass panel">
           <h2>Upload study material</h2>
-          <p className="muted" style={{ marginTop: '0.35rem' }}>
-            PDF, DOCX, TXT, Markdown, JSON, or CSV. API calls simulate generation but produce local mocks.
-          </p>
-
-          <label className="dropzone" style={{ marginTop: '1rem' }}>
+          <label className="dropzone">
             <input
               type="file"
-              accept=".pdf,.docx,.txt,.md,.markdown,.json,.csv,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown,application/json,text/csv"
               disabled={uploadBusy}
               onChange={(e) => {
                 const f = e.target.files?.[0]
@@ -353,258 +257,201 @@ export default function App() {
                 if (f) onUpload(f)
               }}
             />
-            {uploadBusy ? (
-              <span>
-                <span className="spinner" aria-hidden />
-                Processing…
-              </span>
-            ) : (
-              <span>Click or drop a file here to process and add to Library</span>
-            )}
+            <span>{uploadBusy ? 'Processing…' : 'Click or drop a file to add to Library'}</span>
           </label>
-
-          {uploadMsg && (
-            <p className={`status ${uploadMsg.includes('fail') || uploadMsg.includes('Please') ? 'status-error' : ''}`}>
-              {uploadMsg}
-            </p>
-          )}
+          {uploadMsg && <p className="status">{uploadMsg}</p>}
 
           <div style={{ marginTop: '2rem' }}>
-            <h3>Your Document Vault</h3>
+            <h3>Document Vault</h3>
             {documents.length === 0 ? (
-               <p className="muted" style={{ marginTop: '0.5rem' }}>No documents uploaded yet.</p>
+              <p className="muted" style={{ marginTop: '0.5rem' }}>No documents uploaded yet.</p>
             ) : (
-               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
-                  {documents.map(d => (
-                     <div key={d.id} className="glass-inset" style={{ display: 'flex', alignItems: 'center', padding: '1rem' }}>
-                        <div>
-                           <strong>{d.sourceDisplayName}</strong>
-                           <div className="muted" style={{ fontSize: '0.85em', marginTop: '0.2rem' }}>
-                              {d.questions?.length || 0} questions available
-                           </div>
-                        </div>
-                        <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
-                           <button 
-                              type="button" 
-                              className="btn btn-primary" 
-                              onClick={() => {
-                                 setSelectedDocument(d)
-                                 setTab('exam')
-                                 resetExam()
-                              }}
-                           >
-                              Select &amp; Test
-                           </button>
-                           <button 
-                              type="button" 
-                              className="btn btn-ghost"
-                              style={{ color: '#f87171', border: '1px solid rgba(248, 113, 113, 0.3)' }}
-                              onClick={() => deleteDocument(d.id)}
-                           >
-                              Remove
-                           </button>
-                        </div>
-                     </div>
-                  ))}
-               </div>
-            )}
-          </div>
-        </section>
-      )}
-
-      {tab === 'exam' && selectedDocument && (
-        <section className="glass panel">
-          <h2>Exam Mode</h2>
-          <p className="muted" style={{ marginTop: '0.35rem' }}>
-            Document: <strong>{selectedDocument.sourceDisplayName}</strong>
-          </p>
-
-          {!questions.length && (
-            <div style={{ marginTop: '1.5rem' }}>
-              <div className="row" style={{ alignItems: 'flex-end', marginBottom: '1rem' }}>
-                <div className="field">
-                  <label htmlFor="qc">Number of questions to take:</label>
-                  <input
-                    id="qc"
-                    type="number"
-                    min={1}
-                    max={selectedDocument.questions?.length || 50}
-                    value={questionCount}
-                    onChange={(e) =>
-                      setQuestionCount(
-                        Math.min(selectedDocument.questions?.length || 50, Math.max(1, Number(e.target.value) || 1)),
-                      )
-                    }
-                  />
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={examBusy}
-                  onClick={startExam}
-                >
-                  Start Exam
-                </button>
-              </div>
-              <p className="muted stat-box-hint">
-                You have {selectedDocument.questions?.length || 0} questions available in this document's pool.
-              </p>
-              {examError && <p className="status status-error">{examError}</p>}
-            </div>
-          )}
-
-          {phase === 'results' && scoreSummary && (
-            <div className="glass-inset result-banner" style={{ marginTop: '1rem' }}>
-              <h2>Result</h2>
-              <p className="result-pct">{scoreSummary.pct}%</p>
-              <p className="muted">
-                {scoreSummary.correct} correct out of {scoreSummary.total}
-              </p>
-            </div>
-          )}
-
-          {questions.map((q, qi) => (
-            <div key={q.id} className="glass-inset question-block">
-              <div className="question-title">
-                {qi + 1}. {q.question}
-              </div>
-              {q.options.map((opt, oi) => {
-                const selected = answers[q.id] === oi
-                const show = phase === 'results'
-                const isCorrect = oi === q.correctIndex
-                let cls = 'option'
-                if (show) {
-                  if (isCorrect) cls += ' option-correct'
-                  else if (selected && !isCorrect) cls += ' option-wrong'
-                }
-                return (
-                  <label key={oi} className={cls}>
-                    <input
-                      type="radio"
-                      name={q.id}
-                      checked={selected}
-                      disabled={phase === 'results'}
-                      onChange={() =>
-                        setAnswers((a) => ({ ...a, [q.id]: oi }))
-                      }
-                    />
-                    <span>{String.fromCharCode(65 + oi)}. {opt}</span>
-                  </label>
-                )
-              })}
-            </div>
-          ))}
-
-          {questions.length > 0 && phase === 'taking' && (
-            <button type="button" className="btn btn-primary" onClick={submitExam} style={{ marginTop: '1rem' }}>
-              Submit answers
-            </button>
-          )}
-
-          {questions.length > 0 && phase === 'results' && (
-            <button type="button" className="btn btn-ghost" style={{ marginTop: '1rem' }} onClick={() => {
-                resetExam()
-                setTab('library')
-            }}>
-              Try another exam
-            </button>
-          )}
-        </section>
-      )}
-
-      {tab === 'history' && (
-        <section className="glass panel history-panel">
-          <div className="history-header">
-            <h2>Score history</h2>
-            <p className="muted" style={{ marginTop: '0.35rem' }}>
-              {serverHistoryEnabled === true
-                ? 'Your historical exam performance.'
-                : serverHistoryEnabled === false
-                  ? 'Stored locally only. Set FIREBASE_SERVICE_ACCOUNT_B64 on the server to enable cloud history.'
-                  : 'Loading history…'}
-            </p>
-            {historySaveError && (
-              <p className="status status-error" style={{ marginTop: '0.5rem' }}>{historySaveError}</p>
-            )}
-          </div>
-
-          {history.length === 0 ? (
-            <div className="empty-state">
-              <p className="muted">No attempts yet. Complete an exam to see your history here.</p>
-            </div>
-          ) : (
-            <div className="history-grid">
-              <div className="history-sidebar">
-                {history.map((h) => (
-                  <div
-                    key={h.id}
-                    className={`history-item ${selectedHistory?.id === h.id ? 'active' : ''}`}
-                    onClick={() => setSelectedHistory(h)}
-                  >
-                    <div className="history-item-top">
-                      <span className="history-date">{new Date(h.at).toLocaleDateString()}</span>
-                      <span className="history-score">{h.score}/{h.total}</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
+                {documents.map((d) => (
+                  <div key={d.id} className="glass-inset" style={{ display: 'flex', alignItems: 'center', padding: '1rem', gap: '1rem' }}>
+                    <div>
+                      <strong>{d.sourceDisplayName}</strong>
+                      <div className="muted" style={{ fontSize: '0.82rem', marginTop: '0.2rem' }}>
+                        {d.questions?.length || d.questionCandidates || 0} questions
+                        {d.keySheetList?.length ? ` · ${d.keySheetList.length} chapter(s)` : ''}
+                      </div>
                     </div>
-                    <div className="history-source">{h.sourceDisplayName || 'Exam'}</div>
-                    <div className="history-pct-bar">
-                      <div className="history-pct-fill" style={{ width: `${h.pct}%`, background: h.pct >= 70 ? '#4ade80' : h.pct >= 40 ? '#fbbf24' : '#f87171' }} />
+                    <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
+                      <button className="btn btn-primary" onClick={() => { setSelectedDocument(d); setTab('exam'); resetExam() }}>Select</button>
+                      <button className="btn btn-ghost" onClick={() => { setSelectedDocument(d); setTab('keysheet') }}>Key Sheet</button>
+                      <button className="btn btn-ghost" style={{ color: '#f87171' }} onClick={() => deleteDocument(d.id)}>Remove</button>
                     </div>
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+        </section>
+      )}
 
-              <div className="history-content">
-                {selectedHistory ? (
-                  <div className="history-details">
-                    <div className="history-details-header">
-                      <h3>{selectedHistory.sourceDisplayName}</h3>
-                      <p className="muted">{new Date(selectedHistory.at).toLocaleString()}</p>
-                      <div className="history-stats">
-                        <div className="stat">
-                          <span className="stat-label">Score</span>
-                          <span className="stat-value">{selectedHistory.score}/{selectedHistory.total}</span>
-                        </div>
-                        <div className="stat">
-                          <span className="stat-label">Accuracy</span>
-                          <span className="stat-value">{selectedHistory.pct}%</span>
-                        </div>
-                      </div>
+      {/* ── EXAM ── */}
+      {tab === 'exam' && selectedDocument && (
+        <section className="glass panel">
+          <h2>Exam: {selectedDocument.sourceDisplayName}</h2>
+          {examError && <p style={{ color: '#f87171' }}>{examError}</p>}
+          {!questions.length ? (
+            <div className="field">
+              <label>Questions:</label>
+              <input
+                type="number"
+                min={1}
+                value={questionCount}
+                onChange={(e) => setQuestionCount(Math.max(1, parseInt(e.target.value) || 1))}
+              />
+              <button className="btn btn-primary" onClick={startExam} disabled={examBusy}>
+                {examBusy ? 'Loading…' : 'Start'}
+              </button>
+            </div>
+          ) : (
+            <>
+              {phase === 'results' && scoreSummary && (
+                <div className="glass-inset result-banner">
+                  <h2>{scoreSummary.pct}%</h2>
+                  <p>{scoreSummary.correct}/{scoreSummary.total} Correct</p>
+                </div>
+              )}
+              {questions.map((q, qi) => {
+                return (
+                  <div key={q.id} className="glass-inset question-block">
+                    <div className="question-title">
+                      {qi + 1}. {q.question}
                     </div>
-                    
-                    <div className="history-questions">
-                      {selectedHistory.questions?.map((q, qi) => (
-                        <div key={q.id} className="history-q-block">
-                          <div className="history-q-text">{qi + 1}. {q.question}</div>
-                          <div className="history-options">
-                            {q.options.map((opt, oi) => {
-                              const selected = selectedHistory.answers?.[q.id] === oi
-                              const isCorrect = oi === q.correctIndex
-                              let statusClass = ''
-                              if (selected && isCorrect) statusClass = 'correct user-selected'
-                              else if (selected && !isCorrect) statusClass = 'wrong user-selected'
-                              else if (!selected && isCorrect) statusClass = 'correct'
+                    {q.options.map((opt, oi) => {
+                      const isCorrect = (q.correctIndices || [q.correctIndex]).includes(oi)
+                      const chosen = answers[q.id]
+                      const isChosen = Array.isArray(chosen) ? chosen.includes(oi) : chosen === oi
 
-                              return (
-                                <div key={oi} className={`history-opt ${statusClass}`}>
-                                  <span className="opt-letter">{String.fromCharCode(65 + oi)}</span>
-                                  <span className="opt-text">{opt}</span>
-                                  {selected && isCorrect && <span className="opt-tag tag-correct">Correct</span>}
-                                  {selected && !isCorrect && <span className="opt-tag tag-wrong">Your Answer</span>}
-                                  {!selected && isCorrect && <span className="opt-tag tag-answer">Correct Answer</span>}
+                      let className = 'option'
+                      if (phase === 'results') {
+                        if (isCorrect) className += ' option-correct'
+                        else if (isChosen) className += ' option-wrong'
+                      }
+
+                      return (
+                        <div key={oi} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                          <label className={className}>
+                            <input
+                              type="radio"
+                              name={`q-${q.id}`}
+                              checked={isChosen}
+                              onChange={() => {
+                                setAnswers((a) => ({ ...a, [q.id]: oi }))
+                              }}
+                              disabled={phase === 'results'}
+                            />
+                            <span>{String.fromCharCode(65 + oi)}. {opt}</span>
+                            {phase === 'results' && isCorrect && (
+                              <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--correct)', fontWeight: 700 }}>✓ Correct</span>
+                            )}
+                            {phase === 'results' && isChosen && !isCorrect && (
+                              <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--wrong)', fontWeight: 700 }}>✗ Wrong</span>
+                            )}
+                          </label>
+                          {phase === 'results' && q.optionExplanations?.[String.fromCharCode(65 + oi)] && (
+                            <div style={{ marginLeft: '2.5rem', marginBottom: '0.5rem', padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'rgba(251, 146, 60, 0.08)', fontSize: '0.8rem', color: '#000' }}>
+                              <strong style={{ color: '#fb923c' }}>{String.fromCharCode(65 + oi)}:</strong> {q.optionExplanations[String.fromCharCode(65 + oi)]}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                    {/* Show global explanation only after exam is submitted */}
+                    {phase === 'results' && q.explanation && (
+                      <div style={{
+                        marginTop: '0.75rem',
+                        padding: '0.75rem 1rem',
+                        borderRadius: '8px',
+                        background: 'rgba(251, 146, 60, 0.12)',
+                        border: '1px solid rgba(251, 146, 60, 0.35)',
+                        fontSize: '0.88rem',
+                        color: '#000000',
+                        lineHeight: 1.5,
+                      }}>
+                        <strong style={{ color: '#fb923c' }}>Explanation:</strong> {q.explanation}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+              {phase === 'taking' && (
+                <button className="btn btn-primary" onClick={submitExam}>Submit</button>
+              )}
+              {phase === 'results' && (
+                <button className="btn btn-ghost" onClick={() => { resetExam(); setTab('library') }}>Finish</button>
+              )}
+            </>
+          )}
+        </section>
+      )}
+
+      {/* ── KEY SHEET ── */}
+      {tab === 'keysheet' && (
+        <section className="glass panel">
+          {!selectedDocument ? (
+            <div style={{ textAlign: 'center', padding: '3rem' }}>
+              <p className="muted">Select a document from the Library to view its Key Sheet.</p>
+              <button className="btn btn-primary" style={{ marginTop: '1rem' }} onClick={() => setTab('library')}>
+                Go to Library
+              </button>
+            </div>
+          ) : (
+            <div className="keysheet-container">
+              <h2>Key Sheet: {selectedDocument.sourceDisplayName}</h2>
+              <p className="muted" style={{ marginTop: '0.25rem' }}>
+                {selectedDocument.questionCandidates || selectedDocument.questions?.length || 0} questions
+                {selectedDocument.keySheetList?.length ? ` · ${selectedDocument.keySheetList.length} chapter(s)` : ''}
+              </p>
+              {(() => {
+                const list = selectedDocument.keySheetList || []
+                if (list.length === 0) {
+                  return <p className="muted" style={{ marginTop: '1.5rem' }}>No key sheet data. Please re-upload the PDF.</p>
+                }
+                return (
+                  <div className="keysheet-layout" style={{ marginTop: '1.5rem' }}>
+                    <div className="keysheet-main-view">
+                      <h3>Chapter-wise Answer Keys</h3>
+                      {list.map(({ chapter, heading, answers }) => (
+                        <div key={chapter} className="glass-inset" style={{ marginBottom: '1.25rem', padding: '1.25rem' }}>
+                          <h4 style={{ color: 'var(--accent)', marginBottom: '0.85rem' }}>{heading}</h4>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem 1.1rem', fontFamily: 'monospace', fontSize: '0.95rem' }}>
+                            {Object.entries(answers)
+                              .sort((a, b) => parseInt(a[0].match(/\d+/)?.[0] || 0) - parseInt(b[0].match(/\d+/)?.[0] || 0))
+                              .map(([qKey, ans]) => (
+                                <span key={qKey}>
+                                  <span className="muted">{qKey.toLowerCase()}-</span>
+                                  <strong style={{ color: 'var(--correct)' }}>{ans}</strong>
+                                </span>
+                              ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="keysheet-map-sidebar glass-inset" style={{ padding: '1.25rem' }}>
+                      <h3 style={{ marginBottom: '1rem' }}>Answer Map</h3>
+                      {list.map(({ chapter, heading, answers }) => (
+                        <div key={chapter} style={{ marginBottom: '1.25rem' }}>
+                          <div style={{ fontWeight: 700, fontSize: '0.8rem', color: 'var(--accent)', marginBottom: '0.4rem' }}>{heading}</div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.15rem 0.5rem', fontSize: '0.75rem' }}>
+                            {Object.entries(answers)
+                              .sort((a, b) => parseInt(a[0].match(/\d+/)?.[0] || 0) - parseInt(b[0].match(/\d+/)?.[0] || 0))
+                              .map(([qKey, ans]) => (
+                                <div key={qKey} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.1rem 0.3rem' }}>
+                                  <span className="muted">{qKey.toLowerCase()}:</span>
+                                  <strong style={{ color: 'var(--correct)' }}>{ans}</strong>
                                 </div>
-                              )
-                            })}
+                              ))}
                           </div>
                         </div>
                       ))}
                     </div>
                   </div>
-                ) : (
-                  <div className="history-empty-selection">
-                    <p>Select an exam attempt from the left to view detailed results.</p>
-                  </div>
-                )}
-              </div>
+                )
+              })()}
             </div>
           )}
         </section>
